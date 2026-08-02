@@ -43,15 +43,35 @@
     .dropdown-menu button:hover { background: #f3f4f6; }
     .dropdown-menu button.danger { color: #ef4444; }
     .dropdown-menu button.danger:hover { background: #fee2e2; }
-    .btn-add   { background: #2563eb; color: white; padding: 0.55rem 1rem; font-size: 0.95rem; border-radius: 0.4rem; white-space: nowrap; }
+    .btn-add   { background: #2563eb; color: white; padding: 0.55rem 1rem; font-size: 0.95rem; border-radius: 0.4rem; white-space: nowrap; flex-shrink: 0; }
 
     .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
     .card-title { font-weight: 700; color: #444; }
 
     .spacer { flex: 1; }
     .add-row { display: flex; gap: 0.5rem; margin-top: 1.25rem; }
-    input[type=text] { flex: 1; padding: 0.55rem 0.75rem; border: 1px solid #ddd; border-radius: 0.4rem; font-size: 0.95rem; }
+    input[type=text] { flex: 1; min-width: 0; padding: 0.55rem 0.75rem; border: 1px solid #ddd; border-radius: 0.4rem; font-size: 0.95rem; }
+    input[type=number] { min-width: 0; }
     .empty { color: #aaa; text-align: center; padding: 1rem 0; font-size: 0.9rem; }
+
+    .btn-expand { background: #f3f4f6; color: #6b7280; }
+    .person-total { margin: 0.2rem 0 0 3rem; font-size: 0.8rem; color: #888; }
+    .sub-categories { margin: 0.4rem 0 0 3rem; display: flex; flex-direction: column; gap: 0.4rem; }
+    .sub-cat-row { display: flex; align-items: center; gap: 0.5rem; }
+    .sub-cat-label { flex: 1; font-size: 0.9rem; color: #555; }
+    .sub-cat-label small { color: #999; }
+
+    .cat-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) 4rem auto auto; align-items: center; gap: 0.4rem; padding: 0.4rem 0; }
+    .cat-avatar { width: 40px; height: 40px; border-radius: 0.5rem; overflow: hidden; cursor: pointer; background: #dbeafe; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; transition: opacity .15s; }
+    .cat-avatar:hover { opacity: 0.75; }
+    .cat-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .cat-name-input { width: 100%; min-width: 0; padding: 0.4rem 0.5rem; border: 1px solid #ddd; border-radius: 0.4rem; font-size: 0.9rem; }
+    .cat-price-input { width: 100%; min-width: 0; padding: 0.4rem 0.3rem; border: 1px solid #ddd; border-radius: 0.4rem; font-size: 0.9rem; }
+    .cat-price-suffix { color: #888; font-size: 0.85rem; }
+    input[type=number] { font-family: inherit; }
+
+    .breakdown { margin-top: 1rem; border-top: 1px solid #f0f0f0; padding-top: 0.75rem; }
+    .breakdown-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; padding: 0.15rem 0; }
   </style>
 </head>
 <body>
@@ -76,74 +96,236 @@
   </div>
 
   <div class="card">
-    <div class="total" id="total">0</div>
-    <p class="total-label">Unbezahlte Getränke insgesamt</p>
+    <div class="total" id="total">0,00 €</div>
+    <p class="total-label">Offener Betrag insgesamt</p>
+    <div class="breakdown" id="cat-breakdown"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Preiskategorien</span>
+    </div>
+    <div id="category-list"></div>
+    <div class="add-row">
+      <input type="text" id="new-cat-name" placeholder="Name (z. B. Bier)" maxlength="20">
+      <input type="number" id="new-cat-price" placeholder="Preis" step="0.01" min="0" style="max-width:5.5rem">
+      <button class="btn btn-add" onclick="addCategory()">Hinzufügen</button>
+    </div>
   </div>
 
   <input type="file" id="img-input" accept="image/*" style="display:none">
+  <input type="file" id="cat-img-input" accept="image/*" style="display:none">
 
   <script>
     let state = null;
     let uploadTarget = null;
+    let catUploadTarget = null;
     let renamingName = null;
+    let expandedNames = new Set();
+    let categoryFieldFocused = false;
 
     function esc(s) {
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function fmtPrice(n) {
+      return n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+    }
+
     async function load() {
       const d = await (await fetch('/api/count')).json();
-      if (renamingName) { state = d; return; }
+      if (renamingName || categoryFieldFocused) { state = d; return; }
       render(d);
+    }
+
+    function computeTotals(d) {
+      const byCategory = {};
+      (d.categories || []).forEach(c => byCategory[c.id] = 0);
+      d.people.forEach(p => {
+        Object.entries(p.counts || {}).forEach(([cid, cnt]) => {
+          byCategory[cid] = (byCategory[cid] || 0) + cnt;
+        });
+      });
+      let grand = 0;
+      (d.categories || []).forEach(c => { grand += (byCategory[c.id] || 0) * c.price; });
+      return { byCategory, grand };
+    }
+
+    function renderCategories(categories) {
+      const list = document.getElementById('category-list');
+      if (!categories.length) {
+        list.innerHTML = '<p class="empty">Noch keine Kategorien. Zuerst eine hinzufügen.</p>';
+        return;
+      }
+      list.innerHTML = categories.map(c => `
+        <div class="cat-row">
+          <div class="cat-avatar" data-id="${c.id}" onclick="startCatUpload(this)" title="Getränkebild hochladen">
+            ${c.image
+              ? `<img src="/api/image/${esc(c.image)}" alt="${esc(c.name)}">`
+              : `<span>🥤</span>`}
+          </div>
+          <input type="text" class="cat-name-input" value="${esc(c.name)}" maxlength="20" data-id="${c.id}"
+                 onfocus="categoryFieldFocused=true" onblur="categoryFieldFocused=false" onchange="updateCategory(this)">
+          <input type="number" class="cat-price-input" value="${c.price}" step="0.01" min="0" data-id="${c.id}"
+                 onfocus="categoryFieldFocused=true" onblur="categoryFieldFocused=false" onchange="updateCategory(this)">
+          <span class="cat-price-suffix">€</span>
+          <button class="btn btn-icon btn-remove" data-id="${c.id}" onclick="removeCategory(this)" title="Entfernen">&#10005;</button>
+        </div>`).join('');
+    }
+
+    function startCatUpload(el) {
+      catUploadTarget = el.dataset.id;
+      document.getElementById('cat-img-input').click();
+    }
+    document.getElementById('cat-img-input').addEventListener('change', async function () {
+      const file = this.files[0];
+      if (!file || !catUploadTarget) return;
+      const form = new FormData();
+      form.append('id', catUploadTarget);
+      form.append('image', file);
+      const r = await fetch('/api/category/image', { method: 'POST', body: form });
+      if (r.ok) render(await r.json()); else alert((await r.json()).error);
+      this.value = '';
+      catUploadTarget = null;
+    });
+
+    function personRow(p, categories) {
+      const editing = p.name === renamingName;
+      const n = esc(p.name);
+      const avatar = `
+        <div class="avatar" data-name="${n}" onclick="startUpload(this)" title="Bild hochladen">
+          ${p.image
+            ? `<img src="/api/image/${esc(p.image)}" alt="${n}">`
+            : `<span>${esc(p.name.charAt(0).toUpperCase())}</span>`}
+        </div>`;
+      const nameField = editing
+        ? `<input class="rename-input" id="rename-field" value="${n}" maxlength="30" data-name="${n}"
+             onkeydown="if(event.key==='Enter')saveRename(this);else if(event.key==='Escape')cancelRename()">`
+        : `<span class="person-name">${n}</span>`;
+      const menu = editing ? `
+          <button class="btn btn-icon btn-save"   data-name="${n}" onclick="saveRename(this)"  title="Speichern">&#10003;</button>
+          <button class="btn btn-icon btn-cancel"                  onclick="cancelRename()"    title="Abbrechen">&#10007;</button>
+        ` : `
+          <div class="dropdown">
+            <button class="btn btn-icon btn-menu" onclick="toggleMenu(event,this)" title="Optionen">&#8942;</button>
+            <div class="dropdown-menu">
+              <button data-name="${n}" onclick="closeAllMenus();resetPerson(this)">&#8635; Zurücksetzen</button>
+              <button data-name="${n}" onclick="closeAllMenus();startRename(this)">&#9998; Umbenennen</button>
+              <button class="danger" data-name="${n}" onclick="closeAllMenus();removePerson(this)">&#10005; Entfernen</button>
+            </div>
+          </div>
+        `;
+
+      if (!categories.length) {
+        return `<div class="person"><div class="person-row">${avatar}${nameField}<div class="spacer"></div>${menu}</div></div>`;
+      }
+
+      const primary = categories[0];
+      const secondary = categories.slice(1);
+      const expanded = expandedNames.has(p.name);
+      const primaryCount = (p.counts && p.counts[primary.id]) || 0;
+      const personTotal = categories.reduce((s, c) => s + ((p.counts && p.counts[c.id]) || 0) * c.price, 0);
+
+      const subRows = expanded && secondary.length ? `
+        <div class="sub-categories">
+          ${secondary.map(c => {
+            const cnt = (p.counts && p.counts[c.id]) || 0;
+            return `
+            <div class="sub-cat-row">
+              <span class="sub-cat-label">${esc(c.name)} <small>(${fmtPrice(c.price)})</small></span>
+              <button class="btn btn-round btn-minus" data-name="${n}" data-cat="${c.id}" data-delta="-1" onclick="drink(this)">−</button>
+              <span class="person-count">${cnt}</span>
+              <button class="btn btn-round btn-plus"  data-name="${n}" data-cat="${c.id}" data-delta="1"  onclick="drink(this)">+</button>
+            </div>`;
+          }).join('')}
+        </div>` : '';
+
+      return `
+        <div class="person">
+          <div class="person-row">
+            ${avatar}
+            ${nameField}
+            <button class="btn btn-round btn-minus" data-name="${n}" data-cat="${primary.id}" data-delta="-1" onclick="drink(this)">−</button>
+            <span class="person-count">${primaryCount}</span>
+            <button class="btn btn-round btn-plus"  data-name="${n}" data-cat="${primary.id}" data-delta="1"  onclick="drink(this)">+</button>
+            ${secondary.length ? `<button class="btn btn-icon btn-expand" data-name="${n}" onclick="toggleExpand(this)" title="Weitere Kategorien">${expanded ? '&#9650;' : '&#9660;'}</button>` : ''}
+            ${menu}
+          </div>
+          <div class="person-total">Zu zahlen: ${fmtPrice(personTotal)}</div>
+          ${subRows}
+        </div>`;
     }
 
     function render(d) {
       state = d;
-      document.getElementById('total').textContent = d.people.reduce((s, p) => s + p.count, 0);
+      const categories = d.categories || [];
+      const totals = computeTotals(d);
+      document.getElementById('total').textContent = fmtPrice(totals.grand);
+      document.getElementById('cat-breakdown').innerHTML = categories.map(c => `
+        <div class="breakdown-row">
+          <span>${esc(c.name)} (${fmtPrice(c.price)})</span>
+          <span>${totals.byCategory[c.id] || 0} × = ${fmtPrice((totals.byCategory[c.id] || 0) * c.price)}</span>
+        </div>`).join('');
+
+      renderCategories(categories);
+
       const list = document.getElementById('people-list');
       if (!d.people.length) {
         list.innerHTML = '<p class="empty">Noch keine Personen.</p>';
-        return;
+      } else {
+        list.innerHTML = d.people.map(p => personRow(p, categories)).join('');
       }
-      list.innerHTML = d.people.map(p => {
-        const editing = p.name === renamingName;
-        const n = esc(p.name);
-        return `
-        <div class="person">
-          <div class="person-row">
-            <div class="avatar" data-name="${n}" onclick="startUpload(this)" title="Bild hochladen">
-              ${p.image
-                ? `<img src="/api/image/${esc(p.image)}" alt="${n}">`
-                : `<span>${esc(p.name.charAt(0).toUpperCase())}</span>`}
-            </div>
-            ${editing
-              ? `<input class="rename-input" id="rename-field" value="${n}" maxlength="30" data-name="${n}"
-                   onkeydown="if(event.key==='Enter')saveRename(this);else if(event.key==='Escape')cancelRename()">`
-              : `<span class="person-name">${n}</span>`}
-            <button class="btn btn-round btn-minus" data-name="${n}" data-delta="-1" onclick="drink(this)">−</button>
-            <span class="person-count">${p.count}</span>
-            <button class="btn btn-round btn-plus"  data-name="${n}" data-delta="1"  onclick="drink(this)">+</button>
-            ${editing ? `
-              <button class="btn btn-icon btn-save"   data-name="${n}" onclick="saveRename(this)"  title="Speichern">&#10003;</button>
-              <button class="btn btn-icon btn-cancel"                  onclick="cancelRename()"    title="Abbrechen">&#10007;</button>
-            ` : `
-              <div class="dropdown">
-                <button class="btn btn-icon btn-menu" onclick="toggleMenu(event,this)" title="Optionen">&#8942;</button>
-                <div class="dropdown-menu">
-                  <button data-name="${n}" onclick="closeAllMenus();resetPerson(this)">&#8635; Zurücksetzen</button>
-                  <button data-name="${n}" onclick="closeAllMenus();startRename(this)">&#9998; Umbenennen</button>
-                  <button class="danger" data-name="${n}" onclick="closeAllMenus();removePerson(this)">&#10005; Entfernen</button>
-                </div>
-              </div>
-            `}
-          </div>
-        </div>`;
-      }).join('');
 
       if (renamingName) {
         const inp = document.getElementById('rename-field');
         if (inp) { inp.focus(); inp.select(); }
       }
+    }
+
+    function toggleExpand(btn) {
+      const name = btn.dataset.name;
+      if (expandedNames.has(name)) expandedNames.delete(name); else expandedNames.add(name);
+      render(state);
+    }
+
+    async function addCategory() {
+      const nameInput = document.getElementById('new-cat-name');
+      const priceInput = document.getElementById('new-cat-price');
+      const name = nameInput.value.trim();
+      const price = priceInput.value;
+      if (!name) return;
+      const r = await fetch('/api/category', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name, price })
+      });
+      if (r.ok) { nameInput.value = ''; priceInput.value = ''; render(await r.json()); }
+      else alert((await r.json()).error);
+    }
+
+    async function updateCategory(el) {
+      const id = el.dataset.id;
+      const row = el.closest('.cat-row');
+      const name = row.querySelector('.cat-name-input').value.trim();
+      const price = row.querySelector('.cat-price-input').value;
+      const r = await fetch('/api/category/update', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id, name, price })
+      });
+      if (r.ok) render(await r.json());
+      else { alert((await r.json()).error); render(state); }
+    }
+
+    async function removeCategory(btn) {
+      if (!confirm('Kategorie wirklich entfernen? Zugehörige Zähler gehen verloren.')) return;
+      const r = await fetch('/api/category/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: btn.dataset.id })
+      });
+      if (r.ok) render(await r.json());
+      else alert((await r.json()).error);
     }
 
     function startUpload(el) {
@@ -166,7 +348,7 @@
       const r = await fetch('/api/drink', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name: btn.dataset.name, delta: parseInt(btn.dataset.delta) })
+        body: JSON.stringify({ name: btn.dataset.name, categoryId: btn.dataset.cat, delta: parseInt(btn.dataset.delta) })
       });
       render(await r.json());
     }

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import uuid
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 app = Flask(__name__)
@@ -11,13 +12,42 @@ app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 MB
 ALLOWED_EXT = {"jpg", "jpeg", "png", "gif", "webp"}
 
 
+def migrate_legacy_counts(data):
+    """Move the old single 'count' int per person into counts[categoryId]."""
+    legacy_people = [p for p in data["people"] if "count" in p]
+    if legacy_people and not data["categories"]:
+        data["categories"].append({"id": "default", "name": "Getränk", "price": 1.0})
+    default_id = data["categories"][0]["id"] if data["categories"] else None
+    changed = bool(legacy_people)
+    for p in data["people"]:
+        counts = p.setdefault("counts", {})
+        if "count" in p:
+            legacy = p.pop("count")
+            if default_id:
+                counts[default_id] = counts.get(default_id, 0) + legacy
+    return changed
+
+
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, encoding="utf-8") as f:
             data = json.load(f)
             if "people" in data:
+                data.setdefault("categories", [])
+                if migrate_legacy_counts(data):
+                    save_data(data)
                 return data
-    return {"people": []}
+    return {"people": [], "categories": []}
+
+
+def parse_price(value):
+    try:
+        price = round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+    if price < 0:
+        return None
+    return price
 
 
 def save_data(data):
@@ -44,7 +74,7 @@ def add_person():
         return jsonify({"error": "Name darf nicht leer sein"}), 400
     if any(p["name"] == name for p in data["people"]):
         return jsonify({"error": "Name existiert bereits"}), 400
-    data["people"].append({"name": name, "count": 0})
+    data["people"].append({"name": name, "counts": {}})
     save_data(data)
     return jsonify(data)
 
@@ -88,11 +118,15 @@ def get_image(filename):
 def update_drink():
     data = load_data()
     name = request.json.get("name", "").strip()
+    category_id = request.json.get("categoryId", "")
     delta = request.json.get("delta", 1)
     person = next((p for p in data["people"] if p["name"] == name), None)
     if not person:
         return jsonify({"error": "Person nicht gefunden"}), 404
-    person["count"] = max(0, person["count"] + delta)
+    if not any(c["id"] == category_id for c in data["categories"]):
+        return jsonify({"error": "Kategorie nicht gefunden"}), 404
+    counts = person.setdefault("counts", {})
+    counts[category_id] = max(0, counts.get(category_id, 0) + delta)
     save_data(data)
     return jsonify(data)
 
@@ -104,7 +138,86 @@ def reset_person_count():
     person = next((p for p in data["people"] if p["name"] == name), None)
     if not person:
         return jsonify({"error": "Person nicht gefunden"}), 404
-    person["count"] = 0
+    person["counts"] = {}
+    save_data(data)
+    return jsonify(data)
+
+
+@app.post("/api/category")
+def add_category():
+    data = load_data()
+    name = request.json.get("name", "").strip()
+    price = parse_price(request.json.get("price"))
+    if not name:
+        return jsonify({"error": "Name darf nicht leer sein"}), 400
+    if price is None:
+        return jsonify({"error": "Ungültiger Preis"}), 400
+    data["categories"].append({"id": uuid.uuid4().hex[:8], "name": name, "price": price})
+    save_data(data)
+    return jsonify(data)
+
+
+@app.post("/api/category/update")
+def update_category():
+    data = load_data()
+    cat_id = request.json.get("id", "")
+    name = request.json.get("name", "").strip()
+    price = parse_price(request.json.get("price"))
+    category = next((c for c in data["categories"] if c["id"] == cat_id), None)
+    if not category:
+        return jsonify({"error": "Kategorie nicht gefunden"}), 404
+    if not name:
+        return jsonify({"error": "Name darf nicht leer sein"}), 400
+    if price is None:
+        return jsonify({"error": "Ungültiger Preis"}), 400
+    category["name"] = name
+    category["price"] = price
+    save_data(data)
+    return jsonify(data)
+
+
+@app.post("/api/category/image")
+def upload_category_image():
+    data = load_data()
+    cat_id = request.form.get("id", "").strip()
+    category = next((c for c in data["categories"] if c["id"] == cat_id), None)
+    if not category:
+        return jsonify({"error": "Kategorie nicht gefunden"}), 404
+
+    file = request.files.get("image")
+    if not file or not file.filename:
+        return jsonify({"error": "Keine Datei"}), 400
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ALLOWED_EXT:
+        return jsonify({"error": "Ungültiges Format (jpg, png, gif, webp)"}), 400
+
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    if category.get("image"):
+        old = os.path.join(IMAGES_DIR, category["image"])
+        if os.path.exists(old):
+            os.remove(old)
+
+    filename = "cat_" + cat_id + "." + ext
+    file.save(os.path.join(IMAGES_DIR, filename))
+    category["image"] = filename
+    save_data(data)
+    return jsonify(data)
+
+
+@app.post("/api/category/remove")
+def remove_category():
+    data = load_data()
+    cat_id = request.json.get("id", "")
+    category = next((c for c in data["categories"] if c["id"] == cat_id), None)
+    if not category:
+        return jsonify({"error": "Kategorie nicht gefunden"}), 404
+    if category.get("image"):
+        img = os.path.join(IMAGES_DIR, category["image"])
+        if os.path.exists(img):
+            os.remove(img)
+    data["categories"] = [c for c in data["categories"] if c["id"] != cat_id]
+    for p in data["people"]:
+        p.get("counts", {}).pop(cat_id, None)
     save_data(data)
     return jsonify(data)
 
@@ -146,7 +259,7 @@ def remove_person():
 def reset():
     data = load_data()
     for p in data["people"]:
-        p["count"] = 0
+        p["counts"] = {}
     save_data(data)
     return jsonify(data)
 
