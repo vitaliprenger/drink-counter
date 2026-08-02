@@ -28,13 +28,30 @@ def migrate_legacy_counts(data):
     return changed
 
 
+def migrate_category_images(data):
+    """Move the old single 'image' string per category into an 'images' list."""
+    changed = False
+    for c in data["categories"]:
+        if "image" in c:
+            img = c.pop("image")
+            images = c.setdefault("images", [])
+            if img and img not in images:
+                images.append(img)
+            changed = True
+        else:
+            c.setdefault("images", [])
+    return changed
+
+
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, encoding="utf-8") as f:
             data = json.load(f)
             if "people" in data:
                 data.setdefault("categories", [])
-                if migrate_legacy_counts(data):
+                changed = migrate_legacy_counts(data)
+                changed = migrate_category_images(data) or changed
+                if changed:
                     save_data(data)
                 return data
     return {"people": [], "categories": []}
@@ -184,22 +201,40 @@ def upload_category_image():
     if not category:
         return jsonify({"error": "Kategorie nicht gefunden"}), 404
 
-    file = request.files.get("image")
-    if not file or not file.filename:
+    uploads = [(f, f.filename) for f in request.files.getlist("images") if f and f.filename]
+    if not uploads:
         return jsonify({"error": "Keine Datei"}), 400
-    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
-    if ext not in ALLOWED_EXT:
-        return jsonify({"error": "Ungültiges Format (jpg, png, gif, webp)"}), 400
+    for _, orig_name in uploads:
+        ext = orig_name.rsplit(".", 1)[-1].lower() if "." in orig_name else ""
+        if ext not in ALLOWED_EXT:
+            return jsonify({"error": "Ungültiges Format (jpg, png, gif, webp)"}), 400
 
     os.makedirs(IMAGES_DIR, exist_ok=True)
-    if category.get("image"):
-        old = os.path.join(IMAGES_DIR, category["image"])
-        if os.path.exists(old):
-            os.remove(old)
+    images = category.setdefault("images", [])
+    for f, orig_name in uploads:
+        ext = orig_name.rsplit(".", 1)[-1].lower()
+        filename = f"cat_{cat_id}_{uuid.uuid4().hex[:8]}.{ext}"
+        f.save(os.path.join(IMAGES_DIR, filename))
+        images.append(filename)
+    save_data(data)
+    return jsonify(data)
 
-    filename = "cat_" + cat_id + "." + ext
-    file.save(os.path.join(IMAGES_DIR, filename))
-    category["image"] = filename
+
+@app.post("/api/category/image/remove")
+def remove_category_image():
+    data = load_data()
+    cat_id = request.json.get("id", "")
+    filename = request.json.get("filename", "")
+    category = next((c for c in data["categories"] if c["id"] == cat_id), None)
+    if not category:
+        return jsonify({"error": "Kategorie nicht gefunden"}), 404
+    images = category.get("images", [])
+    if filename not in images:
+        return jsonify({"error": "Bild nicht gefunden"}), 404
+    images.remove(filename)
+    path = os.path.join(IMAGES_DIR, filename)
+    if os.path.exists(path):
+        os.remove(path)
     save_data(data)
     return jsonify(data)
 
@@ -211,8 +246,8 @@ def remove_category():
     category = next((c for c in data["categories"] if c["id"] == cat_id), None)
     if not category:
         return jsonify({"error": "Kategorie nicht gefunden"}), 404
-    if category.get("image"):
-        img = os.path.join(IMAGES_DIR, category["image"])
+    for img_name in category.get("images", []):
+        img = os.path.join(IMAGES_DIR, img_name)
         if os.path.exists(img):
             os.remove(img)
     data["categories"] = [c for c in data["categories"] if c["id"] != cat_id]
