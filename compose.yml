@@ -1,0 +1,11 @@
+services:
+  drink-counter:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - drink-data:/data
+    restart: unless-stopped
+
+volumes:
+  drink-data:

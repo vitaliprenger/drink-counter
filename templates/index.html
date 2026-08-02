@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getränkezähler</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f0f4f8; color: #222; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem 1rem; }
+    h1 { font-size: 1.8rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-bottom: 2rem; }
+    .card { background: white; border-radius: 1rem; padding: 1.5rem 2rem; width: 100%; max-width: 440px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
+    .total { font-size: 4rem; font-weight: bold; color: #2563eb; text-align: center; line-height: 1; }
+    .total-label { text-align: center; color: #666; margin-top: 0.25rem; }
+
+    .person { padding: 0.75rem 0; border-bottom: 1px solid #f0f0f0; }
+    .person:last-child { border-bottom: none; }
+    .person-row { display: flex; align-items: center; gap: 0.5rem; }
+
+    .avatar { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; cursor: pointer; background: #dbeafe; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #2563eb; flex-shrink: 0; font-size: 1.1rem; transition: opacity .15s; }
+    .avatar:hover { opacity: 0.75; }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .person-name { font-size: 1rem; flex: 1; word-break: break-word; }
+    .rename-input { flex: 1; padding: 0.25rem 0.5rem; border: 1.5px solid #2563eb; border-radius: 0.3rem; font-size: 0.95rem; min-width: 0; }
+    .person-count { font-size: 1.2rem; font-weight: bold; min-width: 2rem; text-align: center; }
+
+    .btn { border: none; border-radius: 0.4rem; cursor: pointer; font-weight: 700; transition: opacity .15s; }
+    .btn:hover { opacity: 0.8; }
+    .btn-round { width: 2.2rem; height: 2.2rem; font-size: 1.3rem; display: flex; align-items: center; justify-content: center; }
+    .btn-icon  { width: 2rem;   height: 2rem;   font-size: 1rem;   display: flex; align-items: center; justify-content: center; }
+    .btn-plus         { background: #2563eb; color: white; }
+    .btn-minus        { background: #e5e7eb; color: #444; }
+    .btn-reset-person { background: #f3f4f6; color: #6b7280; }
+    .btn-rename       { background: #eff6ff; color: #2563eb; }
+    .btn-remove       { background: #fee2e2; color: #ef4444; }
+    .btn-save         { background: #dcfce7; color: #16a34a; }
+    .btn-cancel       { background: #f3f4f6; color: #6b7280; }
+    .btn-menu         { background: #f3f4f6; color: #6b7280; }
+    .dropdown { position: relative; }
+    .dropdown-menu { display: none; position: absolute; right: 0; top: 100%; background: white; border: 1px solid #e5e7eb; border-radius: 0.5rem; box-shadow: 0 4px 16px rgba(0,0,0,0.12); z-index: 10; min-width: 9rem; overflow: hidden; }
+    .dropdown-menu.open { display: block; }
+    .dropdown-menu button { display: block; width: 100%; text-align: left; padding: 0.5rem 0.75rem; background: none; border: none; cursor: pointer; font-size: 0.9rem; color: #374151; white-space: nowrap; font-weight: normal; }
+    .dropdown-menu button:hover { background: #f3f4f6; }
+    .dropdown-menu button.danger { color: #ef4444; }
+    .dropdown-menu button.danger:hover { background: #fee2e2; }
+    .btn-add   { background: #2563eb; color: white; padding: 0.55rem 1rem; font-size: 0.95rem; border-radius: 0.4rem; white-space: nowrap; }
+
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+    .card-title { font-weight: 700; color: #444; }
+
+    .spacer { flex: 1; }
+    .add-row { display: flex; gap: 0.5rem; margin-top: 1.25rem; }
+    input[type=text] { flex: 1; padding: 0.55rem 0.75rem; border: 1px solid #ddd; border-radius: 0.4rem; font-size: 0.95rem; }
+    .empty { color: #aaa; text-align: center; padding: 1rem 0; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>🧋 Getränkezähler</h1>
+  <p class="subtitle">Wie viel ist auf meinem Bierdeckel?</p>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Personen</span>
+      <div class="dropdown">
+        <button class="btn btn-icon btn-menu" onclick="toggleMenu(event,this)" title="Optionen">&#8942;</button>
+        <div class="dropdown-menu">
+          <button class="danger" onclick="closeAllMenus();resetAll()">&#8635; Alle zurücksetzen</button>
+        </div>
+      </div>
+    </div>
+    <div id="people-list"><p class="empty">Noch keine Personen.</p></div>
+    <div class="add-row">
+      <input type="text" id="new-name" placeholder="Name hinzufügen..." maxlength="30">
+      <button class="btn btn-add" onclick="addPerson()">Hinzufügen</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="total" id="total">0</div>
+    <p class="total-label">Unbezahlte Getränke insgesamt</p>
+  </div>
+
+  <input type="file" id="img-input" accept="image/*" style="display:none">
+
+  <script>
+    let state = null;
+    let uploadTarget = null;
+    let renamingName = null;
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function load() {
+      const d = await (await fetch('/api/count')).json();
+      if (renamingName) { state = d; return; }
+      render(d);
+    }
+
+    function render(d) {
+      state = d;
+      document.getElementById('total').textContent = d.people.reduce((s, p) => s + p.count, 0);
+      const list = document.getElementById('people-list');
+      if (!d.people.length) {
+        list.innerHTML = '<p class="empty">Noch keine Personen.</p>';
+        return;
+      }
+      list.innerHTML = d.people.map(p => {
+        const editing = p.name === renamingName;
+        const n = esc(p.name);
+        return `
+        <div class="person">
+          <div class="person-row">
+            <div class="avatar" data-name="${n}" onclick="startUpload(this)" title="Bild hochladen">
+              ${p.image
+                ? `<img src="/api/image/${esc(p.image)}" alt="${n}">`
+                : `<span>${esc(p.name.charAt(0).toUpperCase())}</span>`}
+            </div>
+            ${editing
+              ? `<input class="rename-input" id="rename-field" value="${n}" maxlength="30" data-name="${n}"
+                   onkeydown="if(event.key==='Enter')saveRename(this);else if(event.key==='Escape')cancelRename()">`
+              : `<span class="person-name">${n}</span>`}
+            <button class="btn btn-round btn-minus" data-name="${n}" data-delta="-1" onclick="drink(this)">−</button>
+            <span class="person-count">${p.count}</span>
+            <button class="btn btn-round btn-plus"  data-name="${n}" data-delta="1"  onclick="drink(this)">+</button>
+            ${editing ? `
+              <button class="btn btn-icon btn-save"   data-name="${n}" onclick="saveRename(this)"  title="Speichern">&#10003;</button>
+              <button class="btn btn-icon btn-cancel"                  onclick="cancelRename()"    title="Abbrechen">&#10007;</button>
+            ` : `
+              <div class="dropdown">
+                <button class="btn btn-icon btn-menu" onclick="toggleMenu(event,this)" title="Optionen">&#8942;</button>
+                <div class="dropdown-menu">
+                  <button data-name="${n}" onclick="closeAllMenus();resetPerson(this)">&#8635; Zurücksetzen</button>
+                  <button data-name="${n}" onclick="closeAllMenus();startRename(this)">&#9998; Umbenennen</button>
+                  <button class="danger" data-name="${n}" onclick="closeAllMenus();removePerson(this)">&#10005; Entfernen</button>
+                </div>
+              </div>
+            `}
+          </div>
+        </div>`;
+      }).join('');
+
+      if (renamingName) {
+        const inp = document.getElementById('rename-field');
+        if (inp) { inp.focus(); inp.select(); }
+      }
+    }
+
+    function startUpload(el) {
+      uploadTarget = el.dataset.name;
+      document.getElementById('img-input').click();
+    }
+    document.getElementById('img-input').addEventListener('change', async function () {
+      const file = this.files[0];
+      if (!file || !uploadTarget) return;
+      const form = new FormData();
+      form.append('name', uploadTarget);
+      form.append('image', file);
+      const r = await fetch('/api/person/image', { method: 'POST', body: form });
+      if (r.ok) render(await r.json()); else alert((await r.json()).error);
+      this.value = '';
+      uploadTarget = null;
+    });
+
+    async function drink(btn) {
+      const r = await fetch('/api/drink', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: btn.dataset.name, delta: parseInt(btn.dataset.delta) })
+      });
+      render(await r.json());
+    }
+
+    async function resetPerson(btn) {
+      if (!confirm(`Zähler von "${btn.dataset.name}" auf 0 zurücksetzen?`)) return;
+      render(await (await fetch('/api/person/reset-count', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: btn.dataset.name })
+      })).json());
+    }
+
+    function startRename(btn) {
+      renamingName = btn.dataset.name;
+      render(state);
+    }
+    function cancelRename() {
+      renamingName = null;
+      render(state);
+    }
+    async function saveRename(el) {
+      const oldName = el.dataset.name;
+      const newName = document.getElementById('rename-field').value.trim();
+      if (!newName || newName === oldName) { cancelRename(); return; }
+      const r = await fetch('/api/person/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: oldName, newName })
+      });
+      renamingName = null;
+      if (r.ok) render(await r.json());
+      else { alert((await r.json()).error); render(state); }
+    }
+
+    async function removePerson(btn) {
+      if (!confirm(`"${btn.dataset.name}" wirklich entfernen?`)) return;
+      render(await (await fetch('/api/person/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: btn.dataset.name })
+      })).json());
+    }
+
+    async function addPerson() {
+      const input = document.getElementById('new-name');
+      const name = input.value.trim();
+      if (!name) return;
+      const r = await fetch('/api/person', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name })
+      });
+      if (r.ok) { input.value = ''; render(await r.json()); }
+      else alert((await r.json()).error);
+    }
+
+    async function resetAll() {
+      if (!confirm('Alle Zaehler auf 0 zuruecksetzen?')) return;
+      render(await (await fetch('/api/reset', { method: 'POST' })).json());
+    }
+
+    function toggleMenu(e, btn) {
+      e.stopPropagation();
+      const menu = btn.nextElementSibling;
+      const willOpen = !menu.classList.contains('open');
+      closeAllMenus();
+      if (willOpen) menu.classList.add('open');
+    }
+    function closeAllMenus() {
+      document.querySelectorAll('.dropdown-menu.open').forEach(m => m.classList.remove('open'));
+    }
+    document.addEventListener('click', closeAllMenus);
+
+    document.getElementById('new-name').addEventListener('keydown', e => {
+      if (e.key === 'Enter') addPerson();
+    });
+
+    load();
+    setInterval(load, 5000);
+  </script>
+</body>
+</html>
